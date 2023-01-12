@@ -1,24 +1,54 @@
-const std = @import("std");
+const uart = @import("uart.zig");
+const gpio = @import("gpio.zig");
 
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+// This is put in the data section
+var ch: u8 = '!';
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+// This ends up in the bss section
+var bss_stuff: [9]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+// Put public functions here named after interrupts to instantiate them as
+// interrupt handlers. If you name one incorrectly you'll get a compiler error
+// with the full list of options.
+pub const interrupts = struct {
+    // Pin Change Interrupt Source 0
+    // pub fn PCINT0() void {}
+};
 
-    try bw.flush(); // don't forget to flush!
+pub fn main() void {
+    uart.init(115200);
+    uart.write("All your codebase are belong to us!\r\n\r\n");
+
+    if (bss_stuff[0] == 0)
+        uart.write("Ahh its actually zero!\r\n");
+
+    bss_stuff = "\r\nhello\r\n".*;
+    uart.write(&bss_stuff);
+
+    // This will actually call our panic handler in start.zig when
+    // uncommented.
+    // var x: u8 = 255;
+    // x += 1;
+
+    gpio.init(5, .out);
+
+    while (true) {
+        uart.write_ch(ch);
+        if (ch < '~') {
+            ch += 1;
+        } else {
+            ch = '!';
+            uart.write("\r\n");
+        }
+
+        gpio.toggle(5);
+        delay_cycles(50000);
+    }
 }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+fn delay_cycles(cycles: u32) void {
+    var count: u32 = 0;
+    while (count < cycles) : (count += 1) {
+        asm volatile ("nop");
+    }
 }

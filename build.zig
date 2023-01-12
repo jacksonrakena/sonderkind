@@ -1,34 +1,66 @@
 const std = @import("std");
+const Builder = std.build.Builder;
 
-pub fn build(b: *std.build.Builder) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
-    const target = b.standardTargetOptions(.{});
+pub fn build(b: *Builder) !void {
+    const uno = std.zig.CrossTarget{
+        .cpu_arch = .avr,
+        .cpu_model = .{ .explicit = &std.Target.avr.cpu.atmega328p },
+        .os_tag = .freestanding,
+        .abi = .none,
+    };
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
-
-    const exe = b.addExecutable("sonderkind", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
+    const exe = b.addExecutable("avr-arduino-zig", "src/start.zig");
+    exe.setTarget(uno);
+    exe.setBuildMode(.ReleaseSafe);
+    exe.bundle_compiler_rt = false;
+    exe.setLinkerScriptPath(std.build.FileSource{ .path = "src/linker.ld" });
     exe.install();
 
-    const run_cmd = exe.run();
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    const tty = b.option(
+        []const u8,
+        "tty",
+        "Specify the port to which the Arduino is connected (defaults to /dev/ttyACM0)",
+    ) orelse "/dev/ttyACM0";
 
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
+    const bin_path = b.getInstallPath(exe.install_step.?.dest_dir, exe.out_filename);
 
-    const exe_tests = b.addTest("src/main.zig");
-    exe_tests.setTarget(target);
-    exe_tests.setBuildMode(mode);
+    const flash_command = blk: {
+        var tmp = std.ArrayList(u8).init(b.allocator);
+        try tmp.appendSlice("-Uflash:w:");
+        try tmp.appendSlice(bin_path);
+        try tmp.appendSlice(":e");
+        break :blk tmp.toOwnedSlice();
+    };
 
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&exe_tests.step);
+    const upload = b.step("upload", "Upload the code to an Arduino device using avrdude");
+    const avrdude = b.addSystemCommand(&.{
+        "avrdude",
+        "-carduino",
+        "-patmega328p",
+        "-D",
+        "-P",
+        tty,
+        flash_command,
+    });
+    upload.dependOn(&avrdude.step);
+    avrdude.step.dependOn(&exe.install_step.?.step);
+
+    const objdump = b.step("objdump", "Show dissassembly of the code using avr-objdump");
+    const avr_objdump = b.addSystemCommand(&.{
+        "avr-objdump",
+        "-dh",
+        bin_path,
+    });
+    objdump.dependOn(&avr_objdump.step);
+    avr_objdump.step.dependOn(&exe.install_step.?.step);
+
+    const monitor = b.step("monitor", "Opens a monitor to the serial output");
+    const screen = b.addSystemCommand(&.{
+        "screen",
+        tty,
+        "115200",
+    });
+    monitor.dependOn(&screen.step);
+
+    b.default_step.dependOn(&exe.step);
 }
